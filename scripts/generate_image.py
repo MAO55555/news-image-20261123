@@ -1,1221 +1,1293 @@
 #!/usr/bin/env python3
 """
 scripts/generate_image.py
-Generates the 1024x1024 editorial news poster for Monday, 23 November 2026.
-Bakes /workspace/news-image-20261123/entry.png deterministically.
+Editorial broadsheet generator for Monday 23 November 2026.
+Bakes a deterministic 1024x1024 RGB PNG to entry.png.
 """
 
 import os
 import sys
-import time
+sys.dont_write_bytecode = True
+import math
 import hashlib
+import tempfile
+import subprocess
 from PIL import Image
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
-OUTPUT_PNG = os.path.join(PROJECT_DIR, "entry.png")
-TMP_HTML = "/tmp/news_entry_render.html"
-TMP_PNG = "/tmp/news_entry_chrome.png"
+# -----------------------------------------------------------------------------
+# News Data Definitions (Monday 23 November 2026 UTC)
+# -----------------------------------------------------------------------------
 
-HTML_CONTENT = """<!DOCTYPE html>
+REGION_PILLS = [
+    ("EUROPE", 7),
+    ("MIDDLE EAST", 3),
+    ("AFRICA", 3),
+    ("SOUTH ASIA", 3),
+    ("EAST ASIA", 4),
+    ("SOUTHEAST ASIA", 3),
+    ("AMERICAS", 3),
+    ("OCEANIA / CLIMATE", 2),
+    ("CAUCASUS / SPACE", 2),
+]
+
+TIMELINE_EVENTS = [
+    ("00:12", "COP31 fallout files"),
+    ("Morn", "450 German school hoaxes"),
+    ("Midday", "NATO AWACS to Poland"),
+    ("13:59", "Nvidia rehires Huang"),
+    ("15:30", "Centurion Day 1 (BAN 91)"),
+    ("Eve", "Spain SC shelves Puigdemont"),
+]
+
+DAY_IN_NUMBERS = [
+    ("7", "Naval drones sank corvette Merkury"),
+    ("11", "Dymer dead as rescue concludes"),
+    ("24", "Dead at Cikande factory fire toll"),
+    ("450", "German schools emailed threats"),
+    ("+31.5%", "Nvidia stock surge (+$1T value)"),
+    ("$1.62B", "India-Nepal aid package agreed"),
+    ("91", "Bangladesh all out at Centurion"),
+]
+
+LEAD_STORIES = [
+    {
+        "num": 1,
+        "loc": "BENGHAZI · WAR",
+        "certainty": "CONFIRMED",
+        "headline": "Ukraine Confirms Sinking of Russian Corvette Merkury",
+        "body": "Zelenskyy & SBU confirm Monday: 7 naval drones launched from mothership sank corvette Merkury in Sunday strike at Benghazi base; MV Angara also hit. UNSMIL urges probe.",
+        "source": "Reuters · AP · The Guardian",
+        "icon": "warship",
+    },
+    {
+        "num": 2,
+        "loc": "DYMER · WAR",
+        "certainty": "OFFICIAL",
+        "headline": "Dymer Rescue Concludes as Strike Toll Rises to 11",
+        "body": "Search-and-rescue ends Monday after Sunday's Russian drone strike on a 5-storey apartment building. Toll rose from 6 to 11, including a child; 2 survivors pulled from rubble.",
+        "source": "Ukrinform · Interfax-Ukraine",
+        "icon": "building",
+    },
+    {
+        "num": 3,
+        "loc": "ANTALYA / SYDNEY",
+        "certainty": "CONFIRMED",
+        "headline": "Bowen Faces Resignation Calls After COP31 Collapse",
+        "body": "Monday political storm in Australia after COP31 closed Sunday with no deal. Angus Taylor demands Bowen quit; Albanese defends him. Marshall Islands: 'let down on all sides.'",
+        "source": "Reuters · SMH · Guardian",
+        "icon": "cop31",
+    },
+    {
+        "num": 4,
+        "loc": "SANTA CLARA · TECH",
+        "certainty": "CONFIRMED",
+        "headline": "Huang Reinstated as Nvidia CEO; Shares Surge 31.5%",
+        "body": "Nvidia rehires Jensen Huang Monday following Donald Trump intervention. Shares jump 31.5%, adding ~$1T in market value. Board rules no national security risk; lawmakers raise questions.",
+        "source": "Reuters 13:59 UTC · CNBC",
+        "icon": "nvidia",
+    },
+    {
+        "num": 5,
+        "loc": "WARSAW · SECURITY",
+        "certainty": "CONFIRMED",
+        "headline": "NATO Deploys AWACS Radar Plane to Poland",
+        "body": "Monday decision: NATO deploys AWACS early-warning jet to Poland after three Russian Kh-101 missiles landed on Polish soil Friday. SACEUR Gen. Grynkewich authorised mission.",
+        "source": "Reuters, Warsaw",
+        "icon": "awacs",
+    },
+    {
+        "num": 6,
+        "loc": "GERMANY / DENMARK",
+        "certainty": "REPORTED",
+        "headline": "450 German Schools Hit by Email Bomb Threat Hoaxes",
+        "body": "Coordinated wave of emailed bomb threats targeted 450 German schools and Danish campuses Monday morning. Police found no specific threat, advising against mass evacuations.",
+        "source": "Reuters · Euronews · DW",
+        "icon": "school",
+    },
+    {
+        "num": 7,
+        "loc": "GAZA · JABALIA",
+        "certainty": "OFFICIAL",
+        "headline": "UNRWA Staff Worker Killed in Jabalia Camp Strike",
+        "body": "Israeli airstrike on Monday killed UNRWA worker Adel Al-Helo near a water well in northern Gaza's Jabalia refugee camp, the agency and local officials reported; three others wounded.",
+        "source": "Reuters · Democracy Now",
+        "icon": "unrwa",
+    },
+    {
+        "num": 8,
+        "loc": "TEHRAN · MIDEAST",
+        "certainty": "OFFICIAL",
+        "headline": "Iran Vows to Use 'All Tools' Against US Naval Blockade",
+        "body": "Foreign ministry spokesman Baghaei announced Monday that Tehran will deploy all means against US naval blockade on oil exports. Trump told Fox News blockade runners would be sunk.",
+        "source": "Reuters · Anadolu",
+        "icon": "iran",
+    },
+    {
+        "num": 9,
+        "loc": "INDONESIA · DISASTER",
+        "certainty": "ONGOING",
+        "headline": "24 Confirmed Dead in Cikande Confectionery Factory Fire",
+        "body": "Indonesian officials confirmed Monday that 24 workers died in Saturday's blaze at PT Fonusa Agung Mulia plant in Banten. Search operations continue for ~30 people still missing.",
+        "source": "Reuters 23 Nov",
+        "icon": "factory",
+    },
+    {
+        "num": 10,
+        "loc": "NEW DELHI · DIPLOMACY",
+        "certainty": "OFFICIAL",
+        "headline": "India Pledges Record $1.62B Aid Package to Flood-Hit Nepal",
+        "body": "PM Narendra Modi and Nepali counterpart Balendra Shah agreed on a $1.62 billion economic package in Delhi Monday during Shah's first overseas bilateral visit since taking office.",
+        "source": "Reuters, New Delhi",
+        "icon": "diplomacy",
+    },
+    {
+        "num": 11,
+        "loc": "MADRID · COURTS",
+        "certainty": "OFFICIAL",
+        "headline": "Spain Supreme Court Shelves Puigdemont Case",
+        "body": "Spain's Supreme Court on Monday closed the criminal case against Catalan separatist Carles Puigdemont, removing his last legal obstacle to return from nine years of Belgian exile.",
+        "source": "Reuters, Madrid",
+        "icon": "scales",
+    },
+    {
+        "num": 12,
+        "loc": "DHAKA · POLITICS",
+        "certainty": "OFFICIAL",
+        "headline": "Dhaka Reaffirms Immediate Arrest if Hasina Returns",
+        "body": "State Minister Shama Obaed Islam told Reuters Monday Bangladesh will arrest and jail ousted PM Sheikh Hasina if she returns from India, pursuing extradition under bilateral treaty.",
+        "source": "Reuters, Dhaka",
+        "icon": "warrant",
+    },
+    {
+        "num": 13,
+        "loc": "SEOUL · SECURITY",
+        "certainty": "OFFICIAL",
+        "headline": "Kang Kum-sil Nominated as S. Korea's First Female Spy Chief",
+        "body": "President Lee Jae Myung unveiled a surprise security reshuffle Monday, naming former justice minister Kang to lead the NIS, alongside new foreign and unification ministers.",
+        "source": "Reuters, Seoul",
+        "icon": "nis",
+    },
+    {
+        "num": 14,
+        "loc": "CENTURION · SPORT",
+        "certainty": "OFFICIAL",
+        "headline": "SA Skittles Bangladesh for 91 on Centurion Day 1",
+        "body": "2nd Test, Day 1 at Centurion: South Africa bowlers skittle Bangladesh for 91 before reaching 88 for 1 at stumps, seizing commanding control on the opening day.",
+        "source": "ESPNcricinfo Match Report",
+        "icon": "cricket",
+    },
+    {
+        "num": 15,
+        "loc": "BEIJING · SECURITY",
+        "certainty": "OFFICIAL",
+        "headline": "Official 'Ma' Sentenced to Death for State Secrets Leak",
+        "body": "China's state secrets watchdog Baomiguan disclosed Monday an administrative official surnamed Ma was sentenced to death for leaking state secrets to a foreign spy agency while abroad.",
+        "source": "Reuters · Baomiguan",
+        "icon": "secrets",
+    },
+]
+
+BRIEF_STORIES = [
+    {
+        "num": 16,
+        "label": "Trump Fox Interview",
+        "text": "Inclined to resume Iran military strikes post-New Year if talks fail; warns blockade runners will be attacked and sunk.",
+        "certainty": "REPORTED",
+    },
+    {
+        "num": 17,
+        "label": "Baltic Sea / Kremlin",
+        "text": "Moscow accuses Ukraine of 'terrorist activity' after Saturday drone strike on Russian cargo ship Sparta II.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 18,
+        "label": "Zakarpattia",
+        "text": "Hungarian PM Peter Magyar announces visit to western Ukraine to express support for ethnic Hungarian minority.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 19,
+        "label": "Belgium",
+        "text": "PM Bart De Wever sets Dec 31 budget deadline, warning deadlock brings government coalition to an end.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 20,
+        "label": "Indonesia",
+        "text": "President Prabowo nominates two cabinet ministers as VP candidates following Gibran's official resignation.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 21,
+        "label": "Thailand",
+        "text": "Appeals Court halves 6-year lèse-majesté prison sentence for opposition lawmaker over social media post.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 22,
+        "label": "China Demographics",
+        "text": "NDRC issues 2030 blueprint upgrading elderly & childcare infrastructure to combat aging trends.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 23,
+        "label": "China–Switzerland",
+        "text": "FM Wang Yi urges Swiss counterpart to oppose Taiwan independence and aid China-EU trade.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 24,
+        "label": "Samsung Cyber",
+        "text": "Confirms 8,000+ customer accounts breached via customer-response portal detected Saturday.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 25,
+        "label": "Colombia",
+        "text": "MinTIC files formal regulatory charges against Starlink Colombia for failing to block prison signals.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 26,
+        "label": "Delta Air Lines",
+        "text": "Resolves weight-and-balance software glitch that triggered nationwide holiday flight delays.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 27,
+        "label": "Zambia",
+        "text": "Opposition leader Brian Mundubile & 12 associates committed to High Court for treason trial.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 28,
+        "label": "Benghazi Denial",
+        "text": "Egypt formally denies reports it withdrew military experts amid eastern Libyan rift.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 29,
+        "label": "Armenia",
+        "text": "Yerevan unveils draft constitution toward Azerbaijan peace treaty; move welcomed by Baku.",
+        "certainty": "OFFICIAL",
+    },
+    {
+        "num": 30,
+        "label": "Space Intel",
+        "text": "German media report NATO intelligence warned Russia plans 'Sputnik-S' orbital nuclear weapon.",
+        "certainty": "CLAIM",
+    },
+]
+
+# Map pins geographic coordinates (lat, lon)
+MAP_LOCATIONS = [
+    (1, 32.1, 20.0),      # Benghazi
+    (2, 50.8, 30.3),      # Dymer
+    (3, -33.9, 151.2),    # Sydney / COP31
+    (4, 37.3, -122.0),    # Santa Clara
+    (5, 52.2, 21.0),      # Warsaw
+    (6, 52.5, 10.0),      # Germany
+    (7, 31.5, 34.5),      # Gaza
+    (8, 35.7, 51.4),      # Tehran
+    (9, -6.2, 106.3),     # Cikande
+    (10, 28.6, 77.2),     # New Delhi
+    (11, 40.4, -3.7),     # Madrid
+    (12, 23.8, 90.4),     # Dhaka
+    (13, 37.5, 127.0),    # Seoul NIS
+    (14, -25.8, 28.2),    # Centurion
+    (15, 39.9, 116.4),    # Beijing
+    (16, 38.9, -77.0),    # Washington DC
+    (17, 59.5, 24.5),     # Baltic Sea
+    (18, 48.5, 23.0),     # Zakarpattia
+    (19, 50.8, 4.3),      # Brussels
+    (20, -6.2, 106.8),    # Jakarta
+    (21, 13.7, 100.5),    # Bangkok
+    (22, 34.0, 108.0),    # China NDRC
+    (23, 46.9, 7.4),      # Bern
+    (24, 36.5, 128.0),    # Samsung Cyber
+    (25, 4.7, -74.0),     # Colombia
+    (26, 33.7, -84.4),    # Delta US
+    (27, -15.4, 28.3),    # Zambia
+    (28, 30.0, 31.2),     # Egypt
+    (29, 40.1, 44.5),     # Armenia
+    (30, 55.7, 37.6),     # Moscow Space
+]
+
+# -----------------------------------------------------------------------------
+# SVG Icons Generation for Lead Cards
+# -----------------------------------------------------------------------------
+
+def get_card_icon_svg(icon_type: str) -> str:
+    """Generate clean editorial vector illustrations for cards (viewBox 0 0 186 34)."""
+    if icon_type == "warship":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#e8edf2" rx="2"/>
+            <path d="M0 24 Q 45 22 90 24 T 186 24 L 186 34 L 0 34 Z" fill="#b9c9d6"/>
+            <!-- Warship silhouette -->
+            <path d="M45 22 L55 14 L85 14 L95 10 L105 10 L110 14 L135 15 L145 22 Z" fill="#2d3748"/>
+            <rect x="75" y="6" width="4" height="8" fill="#1a202c"/>
+            <line x1="77" y1="2" x2="77" y2="6" stroke="#1a202c" stroke-width="1.5"/>
+            <!-- Drone boat -->
+            <path d="M12 23 L22 23 L26 21 L16 21 Z" fill="#c53030"/>
+            <path d="M5 24 Q 10 22 16 23" stroke="#ffffff" stroke-width="1" fill="none"/>
+            <!-- Sinking smoke / fire -->
+            <circle cx="102" cy="11" r="5" fill="#e53e3e" opacity="0.8"/>
+            <circle cx="108" cy="8" r="4" fill="#dd6b20" opacity="0.85"/>
+            <circle cx="114" cy="5" r="3.5" fill="#718096" opacity="0.6"/>
+            <rect x="142" y="4" width="38" height="11" rx="2" fill="#991b1b"/>
+            <text x="161" y="12" fill="#ffffff" font-size="6.5" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">MERKURY</text>
+        </svg>
+        """
+    elif icon_type == "building":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#f0ece6" rx="2"/>
+            <!-- Building intact section -->
+            <rect x="35" y="6" width="35" height="26" fill="#4a5568"/>
+            <rect x="40" y="9" width="5" height="4" fill="#ecc94b"/>
+            <rect x="50" y="9" width="5" height="4" fill="#cbd5e0"/>
+            <rect x="60" y="9" width="5" height="4" fill="#ecc94b"/>
+            <rect x="40" y="16" width="5" height="4" fill="#cbd5e0"/>
+            <rect x="50" y="16" width="5" height="4" fill="#ecc94b"/>
+            <rect x="60" y="16" width="5" height="4" fill="#cbd5e0"/>
+            <rect x="40" y="23" width="5" height="4" fill="#cbd5e0"/>
+            <rect x="50" y="23" width="5" height="4" fill="#cbd5e0"/>
+            <rect x="60" y="23" width="5" height="4" fill="#ecc94b"/>
+            <!-- Collapsed section & rubble -->
+            <path d="M70 12 L85 22 L98 25 L108 32 L70 32 Z" fill="#2d3748"/>
+            <polygon points="78,28 85,24 92,30 84,32" fill="#718096"/>
+            <!-- Searchlight beam -->
+            <polygon points="145,32 105,8 80,18" fill="#faf089" opacity="0.45"/>
+            <rect x="132" y="4" width="48" height="11" rx="2" fill="#1d4ed8"/>
+            <text x="156" y="12" fill="#ffffff" font-size="6.5" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">TOLL: 11 DEAD</text>
+        </svg>
+        """
+    elif icon_type == "cop31":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#f5ede8" rx="2"/>
+            <!-- Globe wireframe -->
+            <circle cx="50" cy="17" r="13" fill="#e2e8f0" stroke="#718096" stroke-width="0.8"/>
+            <ellipse cx="50" cy="17" rx="13" ry="5.5" fill="none" stroke="#718096" stroke-width="0.8"/>
+            <line x1="50" y1="4" x2="50" y2="30" stroke="#718096" stroke-width="0.8"/>
+            <!-- Gavel -->
+            <rect x="75" y="22" width="26" height="5" rx="1" fill="#744210"/>
+            <rect x="78" y="8" width="16" height="8" rx="1.5" fill="#975a16" transform="rotate(-20 86 12)"/>
+            <rect x="84" y="12" width="4" height="14" fill="#744210" transform="rotate(-20 86 19)"/>
+            <!-- NO DEAL Stamp -->
+            <rect x="122" y="6" width="56" height="15" rx="2" fill="#991b1b" stroke="#7f1d1d" stroke-width="1"/>
+            <text x="150" y="17" fill="#ffffff" font-size="8" font-weight="800" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif" letter-spacing="0.5">NO DEAL</text>
+        </svg>
+        """
+    elif icon_type == "nvidia":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#eaf5ea" rx="2"/>
+            <!-- Nvidia chip icon -->
+            <rect x="18" y="7" width="20" height="20" rx="3" fill="#76b900"/>
+            <path d="M23 17 C 23 13 28 13 31 15 C 33 16 34 18 34 20" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="28" cy="17" r="1.5" fill="#ffffff"/>
+            <!-- Surging stock chart -->
+            <polyline points="50,26 70,22 88,24 105,14 122,8" fill="none" stroke="#15803d" stroke-width="2.5" stroke-linecap="round"/>
+            <polygon points="120,5 128,8 122,12" fill="#15803d"/>
+            <rect x="134" y="6" width="46" height="15" rx="2" fill="#15803d"/>
+            <text x="157" y="17" fill="#ffffff" font-size="8" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">+31.5%</text>
+        </svg>
+        """
+    elif icon_type == "awacs":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#ebf3f9" rx="2"/>
+            <!-- AWACS Aircraft silhouette -->
+            <path d="M25 20 L50 18 L70 18 L100 16 L120 18 L130 20 L100 22 L50 22 Z" fill="#334155"/>
+            <polygon points="65,18 78,8 88,18" fill="#475569"/>
+            <polygon points="35,18 42,12 48,18" fill="#475569"/>
+            <!-- Rotodome dish -->
+            <ellipse cx="80" cy="11" rx="14" ry="3.5" fill="#0f172a"/>
+            <!-- Radar arcs -->
+            <path d="M100 7 A 10 10 0 0 1 112 16" fill="none" stroke="#0284c7" stroke-width="1.5"/>
+            <path d="M106 4 A 18 18 0 0 1 124 18" fill="none" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="2,2"/>
+            <rect x="135" y="6" width="44" height="14" rx="2" fill="#0369a1"/>
+            <text x="157" y="16.5" fill="#ffffff" font-size="7" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">AWACS</text>
+        </svg>
+        """
+    elif icon_type == "school":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#fdf2e9" rx="2"/>
+            <!-- Schoolhouse -->
+            <polygon points="35,10 18,22 52,22" fill="#c2410c"/>
+            <rect x="22" y="22" width="26" height="9" fill="#fed7aa"/>
+            <rect x="32" y="25" width="6" height="6" fill="#7c2d12"/>
+            <!-- Envelope alert -->
+            <rect x="68" y="10" width="28" height="18" rx="2" fill="#ffffff" stroke="#ea580c" stroke-width="1.2"/>
+            <polyline points="68,10 82,20 96,10" fill="none" stroke="#ea580c" stroke-width="1.2"/>
+            <circle cx="82" cy="19" r="4" fill="#dc2626"/>
+            <text x="82" y="21.5" fill="#ffffff" font-size="6" font-weight="900" text-anchor="middle">!</text>
+            <rect x="120" y="6" width="58" height="15" rx="2" fill="#b45309"/>
+            <text x="149" y="17" fill="#ffffff" font-size="7" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">450 HOAXES</text>
+        </svg>
+        """
+    elif icon_type == "unrwa":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#eff6ff" rx="2"/>
+            <!-- Water well -->
+            <rect x="28" y="16" width="24" height="14" fill="#94a3b8" rx="1"/>
+            <line x1="28" y1="16" x2="40" y2="8" stroke="#475569" stroke-width="1.5"/>
+            <line x1="52" y1="16" x2="40" y2="8" stroke="#475569" stroke-width="1.5"/>
+            <circle cx="40" cy="12" r="2" fill="#1e293b"/>
+            <!-- UNRWA Badge -->
+            <rect x="68" y="8" width="46" height="18" rx="2" fill="#0284c7"/>
+            <text x="91" y="20" fill="#ffffff" font-size="8.5" font-weight="800" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif" letter-spacing="0.5">UNRWA</text>
+            <line x1="126" y1="5" x2="126" y2="29" stroke="#cbd5e1" stroke-width="1"/>
+            <text x="156" y="20" fill="#dc2626" font-size="7" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">AID WORKER</text>
+        </svg>
+        """
+    elif icon_type == "iran":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#f8fafc" rx="2"/>
+            <!-- Oil tanker -->
+            <rect x="18" y="19" width="45" height="8" rx="1" fill="#334155"/>
+            <rect x="22" y="15" width="8" height="4" fill="#475569"/>
+            <rect x="52" y="13" width="7" height="6" fill="#64748b"/>
+            <!-- Blockade dashed line barrier -->
+            <line x1="85" y1="4" x2="85" y2="30" stroke="#dc2626" stroke-width="2.5" stroke-dasharray="3,2"/>
+            <rect x="110" y="8" width="65" height="17" rx="2" fill="#15803d"/>
+            <text x="142" y="20" fill="#ffffff" font-size="7.5" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">TEHRAN: ALL TOOLS</text>
+        </svg>
+        """
+    elif icon_type == "factory":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#fef2f2" rx="2"/>
+            <!-- Sawtooth factory -->
+            <polygon points="15,28 15,16 28,22 28,16 42,22 42,16 56,22 56,28" fill="#475569"/>
+            <rect x="62" y="10" width="6" height="18" fill="#334155"/>
+            <!-- Flames -->
+            <path d="M72 26 Q 78 12 84 26 Q 88 16 94 26 Z" fill="#ea580c"/>
+            <path d="M76 26 Q 81 18 86 26 Z" fill="#facc15"/>
+            <circle cx="85" cy="10" r="5" fill="#94a3b8" opacity="0.6"/>
+            <circle cx="92" cy="7" r="6" fill="#64748b" opacity="0.5"/>
+            <rect x="122" y="6" width="56" height="15" rx="2" fill="#b91c1c"/>
+            <text x="150" y="17" fill="#ffffff" font-size="7.5" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">24 DEAD</text>
+        </svg>
+        """
+    elif icon_type == "diplomacy":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#f0fdf4" rx="2"/>
+            <!-- Interlocking diplomacy nodes -->
+            <circle cx="32" cy="17" r="10" fill="#ea580c"/>
+            <circle cx="48" cy="17" r="10" fill="#0284c7"/>
+            <path d="M36 17 L44 17" stroke="#ffffff" stroke-width="2"/>
+            <rect x="80" y="7" width="95" height="17" rx="2" fill="#15803d"/>
+            <text x="127" y="19" fill="#ffffff" font-size="7.5" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">$1.62B NEPAL AID</text>
+        </svg>
+        """
+    elif icon_type == "scales":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#fdfbf7" rx="2"/>
+            <!-- Scales of Justice -->
+            <line x1="42" y1="8" x2="42" y2="28" stroke="#78350f" stroke-width="2"/>
+            <line x1="26" y1="12" x2="58" y2="12" stroke="#78350f" stroke-width="1.8"/>
+            <line x1="28" y1="12" x2="24" y2="20" stroke="#b45309" stroke-width="0.8"/>
+            <line x1="28" y1="12" x2="32" y2="20" stroke="#b45309" stroke-width="0.8"/>
+            <path d="M22 20 Q 28 23 34 20 Z" fill="#b45309"/>
+            <line x1="56" y1="12" x2="52" y2="20" stroke="#b45309" stroke-width="0.8"/>
+            <line x1="56" y1="12" x2="60" y2="20" stroke="#b45309" stroke-width="0.8"/>
+            <path d="M50 20 Q 56 23 62 20 Z" fill="#b45309"/>
+            <rect x="88" y="7" width="88" height="17" rx="2" fill="#1d4ed8"/>
+            <text x="132" y="19" fill="#ffffff" font-size="7.5" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">CASE SHELVED</text>
+        </svg>
+        """
+    elif icon_type == "warrant":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#fafaf9" rx="2"/>
+            <!-- Handcuffs silhouette -->
+            <circle cx="32" cy="17" r="7" fill="none" stroke="#475569" stroke-width="2"/>
+            <circle cx="54" cy="17" r="7" fill="none" stroke="#475569" stroke-width="2"/>
+            <line x1="39" y1="17" x2="47" y2="17" stroke="#475569" stroke-width="2"/>
+            <rect x="85" y="7" width="90" height="17" rx="2" fill="#c2410c"/>
+            <text x="130" y="19" fill="#ffffff" font-size="7.5" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">ARREST WARRANT</text>
+        </svg>
+        """
+    elif icon_type == "nis":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#eff6ff" rx="2"/>
+            <!-- NIS Shield -->
+            <polygon points="35,6 48,10 48,22 35,28 22,22 22,10" fill="#1e3a8a"/>
+            <polygon points="35,11 43,14 43,20 35,24 27,20 27,14" fill="#3b82f6"/>
+            <rect x="68" y="7" width="108" height="17" rx="2" fill="#1e40af"/>
+            <text x="122" y="19" fill="#ffffff" font-size="7.5" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">1ST WOMAN NIS CHIEF</text>
+        </svg>
+        """
+    elif icon_type == "cricket":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#fefce8" rx="2"/>
+            <!-- Stumps & flying bails -->
+            <line x1="25" y1="12" x2="25" y2="28" stroke="#854d0e" stroke-width="2"/>
+            <line x1="32" y1="10" x2="32" y2="28" stroke="#854d0e" stroke-width="2"/>
+            <line x1="39" y1="14" x2="39" y2="28" stroke="#854d0e" stroke-width="2"/>
+            <line x1="28" y1="6" x2="36" y2="8" stroke="#ca8a04" stroke-width="1.8" transform="rotate(-30 32 7)"/>
+            <circle cx="48" cy="18" r="4.5" fill="#dc2626"/>
+            <rect x="75" y="7" width="100" height="17" rx="2" fill="#854d0e"/>
+            <text x="125" y="19" fill="#ffffff" font-size="7.5" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">BAN 91 ALL OUT</text>
+        </svg>
+        """
+    elif icon_type == "secrets":
+        return """
+        <svg viewBox="0 0 186 34" width="100%" height="34" xmlns="http://www.w3.org/2000/svg">
+            <rect width="186" height="34" fill="#fdf2f2" rx="2"/>
+            <!-- Secret folder -->
+            <polygon points="18,10 28,10 32,13 54,13 54,27 18,27" fill="#b91c1c"/>
+            <rect x="22" y="15" width="28" height="9" fill="#ffffff"/>
+            <text x="36" y="22" fill="#b91c1c" font-size="5.5" font-weight="800" text-anchor="middle">SECRETS</text>
+            <rect x="68" y="7" width="108" height="17" rx="2" fill="#7f1d1d"/>
+            <text x="122" y="19" fill="#ffffff" font-size="7.5" font-weight="700" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif">DEATH SENTENCE</text>
+        </svg>
+        """
+    return ""
+
+# -----------------------------------------------------------------------------
+# World Map SVG & Pin Placement
+# -----------------------------------------------------------------------------
+
+def relax_pin_positions(coords, min_dist=9.2, iterations=80, bounds=(9, 9, 331, 137)):
+    """Collision avoidance relaxation to ensure circles and text never overlap."""
+    pts = [list(pt) for pt in coords]
+    n = len(pts)
+    for _ in range(iterations):
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx = pts[j][0] - pts[i][0]
+                dy = pts[j][1] - pts[i][1]
+                dist = math.hypot(dx, dy)
+                if dist < 0.001:
+                    dx, dy, dist = 0.5, 0.5, 0.707
+                if dist < min_dist:
+                    overlap = (min_dist - dist) / 2.0
+                    nx = (dx / dist) * overlap
+                    ny = (dy / dist) * overlap
+                    pts[i][0] -= nx
+                    pts[i][1] -= ny
+                    pts[j][0] += nx
+                    pts[j][1] += ny
+        for p in pts:
+            p[0] = max(bounds[0], min(bounds[2], p[0]))
+            p[1] = max(bounds[1], min(bounds[3], p[1]))
+    return pts
+
+def generate_world_map_svg() -> str:
+    """Generate World Map SVG with landmasses and non-overlapping pins 1–30."""
+    w, h = 340, 145
+    # Calculate base equirectangular projection
+    raw_coords = []
+    for num, lat, lon in MAP_LOCATIONS:
+        x = (lon + 180.0) / 360.0 * w
+        y = (90.0 - lat) / 180.0 * h
+        raw_coords.append((x, y))
+
+    relaxed = relax_pin_positions(raw_coords, min_dist=9.2, iterations=80)
+
+    # Simplified world continent landmasses
+    map_svg = f"""
+    <svg viewBox="0 0 {w} {h}" width="100%" height="100%" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="{w}" height="{h}" fill="#f0ebe1" rx="2" stroke="#d5cebe" stroke-width="1"/>
+        <!-- Lat/Lon grid lines -->
+        <line x1="0" y1="{h/2}" x2="{w}" y2="{h/2}" stroke="#e4ded0" stroke-width="0.8" stroke-dasharray="3,3"/>
+        <line x1="{w/2}" y1="0" x2="{w/2}" y2="{h}" stroke="#e4ded0" stroke-width="0.8" stroke-dasharray="3,3"/>
+
+        <!-- Continents -->
+        <g fill="#dfd7c5" stroke="#cfc4b0" stroke-width="0.6">
+            <!-- North America -->
+            <path d="M 22 25 L 45 15 L 85 14 L 105 20 L 98 32 L 88 38 L 92 50 L 82 56 L 72 55 L 75 66 L 70 58 L 55 52 L 40 40 L 30 32 Z" />
+            <!-- Greenland -->
+            <path d="M 100 10 L 122 8 L 125 18 L 108 22 Z" />
+            <!-- South America -->
+            <path d="M 75 67 L 95 68 L 115 76 L 118 88 L 110 105 L 98 128 L 92 128 L 86 100 L 80 78 Z" />
+            <!-- Europe -->
+            <path d="M 160 38 L 168 34 L 175 26 L 188 18 L 192 25 L 184 28 L 198 25 L 202 36 L 188 38 L 184 45 L 172 44 L 162 42 Z" />
+            <!-- Great Britain & Scandinavia -->
+            <circle cx="166" cy="28" r="4" />
+            <!-- Africa -->
+            <path d="M 162 48 L 195 48 L 210 62 L 205 75 L 198 108 L 188 112 L 180 92 L 158 68 L 155 58 Z" />
+            <circle cx="212" cy="95" r="3.5" /> <!-- Madagascar -->
+            <!-- Asia -->
+            <path d="M 202 24 L 240 18 L 285 20 L 295 32 L 280 42 L 272 55 L 260 66 L 245 68 L 235 55 L 218 52 L 212 42 L 202 36 Z" />
+            <!-- Japan -->
+            <path d="M 292 36 L 296 42 L 293 48 Z" />
+            <!-- Southeast Asia & Indonesia -->
+            <path d="M 255 76 L 278 77 L 272 82 L 252 80 Z" />
+            <circle cx="280" cy="74" r="3" />
+            <!-- Australia & Oceania -->
+            <path d="M 278 95 L 305 88 L 318 94 L 315 114 L 300 118 L 282 112 Z" />
+            <path d="M 325 116 L 330 124 L 322 126 Z" /> <!-- NZ -->
+        </g>
+
+        <!-- Pins 1–30 -->
+        <g id="pins">
+    """
+
+    for i, (px, py) in enumerate(relaxed):
+        num = i + 1
+        # circle radius >= 4, font-size >= 5, lining-nums tabular-nums
+        map_svg += f"""
+        <g class="map-pin pin-{num}">
+            <circle cx="{px:.1f}" cy="{py:.1f}" r="4.3" fill="#991b1b" stroke="#ffffff" stroke-width="0.8"/>
+            <text x="{px:.1f}" y="{py + 1.8:.1f}" font-size="5.2" font-family="'IBM Plex Sans', sans-serif" font-weight="700" fill="#ffffff" text-anchor="middle">{num}</text>
+        </g>
+        """
+
+    map_svg += """
+        </g>
+    </svg>
+    """
+    return map_svg
+
+# -----------------------------------------------------------------------------
+# CSS Styling & HTML Builder
+# -----------------------------------------------------------------------------
+
+def build_stylesheet() -> str:
+    return """
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+        width: 1024px;
+        height: 1024px;
+        overflow: hidden;
+        background-color: #f7f4eb;
+        font-family: 'IBM Plex Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #1a1a1a;
+        -webkit-font-smoothing: antialiased;
+        padding: 12px 14px;
+    }
+
+    /* Masthead and Top Section */
+    .top-eyebrow {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 7.2px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        border-bottom: 1px solid #1a1a1a;
+        padding-bottom: 2px;
+        margin-bottom: 2px;
+    }
+    .eyebrow-center {
+        color: #991b1b;
+        font-weight: 800;
+        letter-spacing: 0.8px;
+    }
+    .masthead {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        padding: 2px 0 3px 0;
+    }
+    .masthead-title {
+        font-family: 'IBM Plex Serif', 'Playfair Display', Georgia, serif;
+        font-size: 35px;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        line-height: 1;
+        color: #111111;
+    }
+    .masthead-meta {
+        text-align: right;
+        font-size: 7.2px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        line-height: 1.3;
+        color: #333333;
+    }
+    .masthead-rule {
+        border-top: 3px solid #111111;
+        border-bottom: 1px solid #111111;
+        height: 5px;
+        margin-bottom: 3px;
+    }
+    .ticker-bar {
+        font-size: 7.4px;
+        font-style: italic;
+        color: #262626;
+        padding: 2px 0 3px 0;
+        border-bottom: 1px solid #dcd7cb;
+        margin-bottom: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+    }
+
+    /* Region Pills */
+    .pills-container {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 4px;
+    }
+    .pill {
+        background: #eae4d5;
+        border: 1px solid #cfc7b4;
+        border-radius: 2px;
+        padding: 2px 5px;
+        font-size: 6.8px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        color: #2d2a26;
+        display: flex;
+        align-items: center;
+        gap: 3px;
+    }
+    .pill-count {
+        background: #1a1a1a;
+        color: #ffffff;
+        border-radius: 2px;
+        padding: 0 3px;
+        font-size: 6.2px;
+        font-weight: 800;
+    }
+
+    /* Timeline Bar */
+    .timeline-bar {
+        background: #1c1917;
+        color: #ffffff;
+        border-radius: 2px;
+        display: flex;
+        align-items: center;
+        padding: 3px 6px;
+        font-size: 7.0px;
+        margin-bottom: 5px;
+        gap: 10px;
+    }
+    .timeline-badge {
+        background: #d97706;
+        color: #ffffff;
+        font-weight: 800;
+        padding: 1px 4px;
+        border-radius: 2px;
+        font-size: 6.8px;
+        letter-spacing: 0.4px;
+    }
+    .timeline-item {
+        display: flex;
+        gap: 3px;
+    }
+    .timeline-time {
+        color: #fbbf24;
+        font-weight: 700;
+    }
+
+    /* Day in Numbers */
+    .numbers-strip {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 4px;
+        margin-bottom: 6px;
+    }
+    .number-card {
+        background: #ffffff;
+        border: 1px solid #dcd7cb;
+        border-radius: 2px;
+        padding: 3px 4px;
+        text-align: center;
+    }
+    .number-val {
+        font-size: 12px;
+        font-weight: 800;
+        color: #991b1b;
+        line-height: 1.1;
+    }
+    .number-lbl {
+        font-size: 5.8px;
+        font-weight: 600;
+        color: #4b5563;
+        line-height: 1.1;
+        margin-top: 1px;
+    }
+
+    /* Lead Cards Grid (15 cards: 5x3) */
+    .lead-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        grid-template-rows: repeat(3, 140px);
+        gap: 5px;
+        margin-bottom: 6px;
+    }
+    .lead-card {
+        background: #ffffff;
+        border: 1px solid #dcd7cb;
+        border-radius: 2px;
+        padding: 4px 5px;
+        display: flex;
+        flex-direction: column;
+        height: 140px;
+    }
+    .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 3px;
+    }
+    .card-header-left {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+    }
+    .card-num {
+        background: #111111;
+        color: #ffffff;
+        font-size: 6.0px;
+        font-weight: 800;
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .card-loc {
+        font-size: 6.4px;
+        font-weight: 800;
+        color: #1f2937;
+        letter-spacing: 0.2px;
+    }
+    .certainty-badge {
+        font-size: 5.4px;
+        font-weight: 800;
+        padding: 0.5px 3px;
+        border-radius: 2px;
+        text-transform: uppercase;
+        border: 1px solid currentColor;
+    }
+    .cert-confirmed { color: #991b1b; }
+    .cert-official { color: #1d4ed8; }
+    .cert-reported { color: #b45309; }
+    .cert-ongoing { color: #b45309; }
+    .cert-claim { color: #6b21a8; }
+
+    .card-illustration {
+        width: 100%;
+        height: 42px;
+        margin-bottom: 3px;
+    }
+    .card-headline {
+        font-size: 8.0px;
+        font-weight: 800;
+        line-height: 9.6px;
+        color: #0f172a;
+        margin-bottom: 2px;
+    }
+    .card-body {
+        font-size: 6.4px;
+        line-height: 7.8px;
+        color: #334155;
+        flex-grow: 1;
+    }
+    .card-source {
+        font-size: 5.4px;
+        font-style: italic;
+        color: #64748b;
+        text-align: right;
+        margin-top: 1px;
+    }
+
+    /* Briefs and Map Section */
+    .middle-section {
+        display: grid;
+        grid-template-columns: 636px 350px;
+        gap: 10px;
+        height: 185px;
+        margin-bottom: 6px;
+    }
+    .briefs-container {
+        display: flex;
+        flex-direction: column;
+    }
+    .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 7.0px;
+        font-weight: 800;
+        letter-spacing: 0.3px;
+        text-transform: uppercase;
+        border-bottom: 1px solid #111111;
+        padding-bottom: 1.5px;
+        margin-bottom: 4px;
+    }
+    .briefs-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        grid-template-rows: repeat(5, 31px);
+        gap: 3px 6px;
+    }
+    .brief-item {
+        font-size: 6.2px;
+        line-height: 7.6px;
+        color: #1e293b;
+    }
+    .brief-num {
+        display: inline-block;
+        background: #111111;
+        color: #ffffff;
+        font-size: 5.5px;
+        font-weight: 800;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        text-align: center;
+        line-height: 9px;
+        margin-right: 2px;
+    }
+    .brief-label {
+        font-weight: 700;
+        color: #0f172a;
+    }
+    .brief-cert {
+        font-size: 5.0px;
+        font-weight: 800;
+        color: #1d4ed8;
+        margin-left: 2px;
+    }
+    .brief-cert.claim { color: #6b21a8; }
+    .brief-cert.reported { color: #b45309; }
+
+    .map-container {
+        display: flex;
+        flex-direction: column;
+    }
+    .map-box {
+        width: 100%;
+        height: 165px;
+    }
+
+    /* Footer Section */
+    .footer-section {
+        display: grid;
+        grid-template-columns: 636px 350px;
+        gap: 10px;
+        height: 125px;
+    }
+    .date-check-box {
+        background: #ffffff;
+        border: 1px solid #991b1b;
+        border-radius: 2px;
+        padding: 6px 8px;
+    }
+    .date-check-title {
+        color: #991b1b;
+        font-size: 8.0px;
+        font-weight: 800;
+        letter-spacing: 0.4px;
+        margin-bottom: 3px;
+        text-transform: uppercase;
+    }
+    .date-check-included {
+        font-size: 7.0px;
+        line-height: 8.8px;
+        color: #1e293b;
+        margin-bottom: 3px;
+    }
+    .date-check-leftout {
+        font-size: 6.4px;
+        line-height: 8.0px;
+        color: #475569;
+    }
+    .how-sure-box {
+        background: #ffffff;
+        border: 1px solid #dcd7cb;
+        border-radius: 2px;
+        padding: 6px 8px;
+    }
+    .how-sure-title {
+        color: #111111;
+        font-size: 7.6px;
+        font-weight: 800;
+        letter-spacing: 0.4px;
+        margin-bottom: 3px;
+        text-transform: uppercase;
+    }
+    .how-sure-row {
+        font-size: 6.4px;
+        line-height: 8.6px;
+        color: #334155;
+    }
+    .how-sure-note {
+        font-size: 5.6px;
+        font-style: italic;
+        color: #64748b;
+        margin-top: 3px;
+    }
+
+    /* Bottom Colophon */
+    .colophon {
+        text-align: right;
+        font-size: 7.0px;
+        color: #57534e;
+        margin-top: 4px;
+    }
+
+    /* Fatal typography guarantee for footer years */
+    span.year {
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        font-family: 'IBM Plex Sans', 'Inter', sans-serif !important;
+        letter-spacing: 0.15px !important;
+        font-variant-numeric: lining-nums tabular-nums !important;
+        display: inline-block;
+        color: inherit;
+        line-height: 1;
+    }
+    """
+
+def build_html() -> str:
+    """Build the editorial broadsheet HTML document."""
+    # Compose Region Pills
+    pills_html = []
+    for reg, cnt in REGION_PILLS:
+        pills_html.append(f'<div class="pill">{reg} <span class="pill-count">{cnt}</span></div>')
+    pills_str = "\n".join(pills_html)
+
+    # Compose Timeline Events
+    timeline_html = ['<div class="timeline-badge">THE DAY IN UTC</div>']
+    for t_time, t_text in TIMELINE_EVENTS:
+        timeline_html.append(
+            f'<div class="timeline-item"><span class="timeline-time">{t_time}</span> <span>{t_text}</span></div>'
+        )
+    timeline_str = " · ".join(timeline_html[1:])
+    timeline_full = f'<div class="timeline-bar">{timeline_html[0]} {timeline_str}</div>'
+
+    # Compose Day in Numbers
+    numbers_html = []
+    for val, lbl in DAY_IN_NUMBERS:
+        numbers_html.append(f"""
+        <div class="number-card">
+            <div class="number-val">{val}</div>
+            <div class="number-lbl">{lbl}</div>
+        </div>
+        """)
+    numbers_str = "\n".join(numbers_html)
+
+    # Compose Lead Stories (1–15)
+    lead_cards_html = []
+    for item in LEAD_STORIES:
+        cert_class = f"cert-{item['certainty'].lower()}"
+        icon_svg = get_card_icon_svg(item['icon'])
+        lead_cards_html.append(f"""
+        <div class="lead-card">
+            <div class="card-header">
+                <div class="card-header-left">
+                    <span class="card-num">{item['num']}</span>
+                    <span class="card-loc">{item['loc']}</span>
+                </div>
+                <span class="certainty-badge {cert_class}">{item['certainty']}</span>
+            </div>
+            <div class="card-illustration">{icon_svg}</div>
+            <div class="card-headline">{item['headline']}</div>
+            <div class="card-body">{item['body']}</div>
+            <div class="card-source">{item['source']}</div>
+        </div>
+        """)
+    lead_cards_str = "\n".join(lead_cards_html)
+
+    # Compose Briefs (16–30)
+    briefs_html = []
+    for b in BRIEF_STORIES:
+        cert_cls = "claim" if b['certainty'] == "CLAIM" else ("reported" if b['certainty'] == "REPORTED" else "official")
+        briefs_html.append(f"""
+        <div class="brief-item">
+            <span class="brief-num">{b['num']}</span>
+            <span class="brief-label">{b['label']}:</span> {b['text']}
+            <span class="brief-cert {cert_cls}">[{b['certainty']}]</span>
+        </div>
+        """)
+    briefs_str = "\n".join(briefs_html)
+
+    # World map SVG
+    world_map_svg = generate_world_map_svg()
+
+    # Compose Complete HTML
+    html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<style>
-  * {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-  }
-  @page {
-    size: 1024px 1024px;
-    margin: 0;
-  }
-  html, body {
-    width: 1024px;
-    height: 1024px;
-    overflow: hidden;
-    background: #f5efe6;
-    color: #1a1714;
-    font-family: 'IBM Plex Sans', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
-
-  .broadsheet {
-    width: 1024px;
-    height: 1024px;
-    padding: 10px 14px 10px 14px;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    background: #f6f0e7;
-    position: relative;
-  }
-
-  /* 1. HEADER SECTION */
-  .header-masthead {
-    border-bottom: 2px solid #221e1a;
-    padding-bottom: 4px;
-    flex-shrink: 0;
-  }
-  .top-meta {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 8.5px;
-    font-weight: 700;
-    letter-spacing: 1.2px;
-    text-transform: uppercase;
-    color: #5c544d;
-    border-bottom: 1px solid #d8cfc4;
-    padding-bottom: 2px;
-  }
-  .top-meta .flag {
-    color: #8b0000;
-    font-weight: 800;
-  }
-  .masthead-main {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    margin: 2px 0 1px 0;
-  }
-  .masthead-date {
-    font-family: 'DM Serif Display', 'Newsreader', 'Libre Baskerville', serif;
-    font-size: 38px;
-    line-height: 44px;
-    font-weight: 900;
-    letter-spacing: -0.5px;
-    color: #161311;
-    text-transform: capitalize;
-  }
-  .masthead-edition {
-    text-align: right;
-    font-size: 8.5px;
-    line-height: 11px;
-    font-weight: 600;
-    color: #4a423a;
-  }
-  .sub-leads {
-    font-family: 'IBM Plex Serif', 'Libre Baskerville', serif;
-    font-size: 9.8px;
-    line-height: 12px;
-    font-style: italic;
-    color: #2b2520;
-    border-top: 1px solid #221e1a;
-    padding-top: 3px;
-    margin-top: 2px;
-    display: flex;
-    justify-content: space-between;
-  }
-
-  /* 2. REGION PILLS */
-  .region-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: #eae2d5;
-    border: 1px solid #cfc4b4;
-    border-radius: 3px;
-    padding: 3px 6px;
-    margin-top: 4px;
-    flex-shrink: 0;
-  }
-  .region-pill {
-    font-size: 7.8px;
-    font-weight: 700;
-    letter-spacing: 0.4px;
-    text-transform: uppercase;
-    color: #38312a;
-  }
-  .region-pill span {
-    background: #2b2520;
-    color: #fff;
-    padding: 0 4px;
-    border-radius: 2px;
-    font-size: 7px;
-    margin-left: 2px;
-  }
-
-  /* 3. UTC TIMELINE */
-  .timeline-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: #221d18;
-    color: #e5ded5;
-    border-radius: 2px;
-    padding: 3px 6px;
-    margin-top: 4px;
-    font-size: 7.4px;
-    flex-shrink: 0;
-  }
-  .timeline-title {
-    font-weight: 800;
-    color: #f59e0b;
-    letter-spacing: 0.8px;
-    margin-right: 6px;
-  }
-  .time-stop {
-    display: flex;
-    align-items: center;
-    gap: 3px;
-  }
-  .time-tag {
-    font-weight: 700;
-    color: #fcd34d;
-  }
-
-  /* 4. DAY IN NUMBERS */
-  .numbers-bar {
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    gap: 4px;
-    margin-top: 4px;
-    flex-shrink: 0;
-  }
-  .num-card {
-    background: #fdfcf9;
-    border: 1px solid #cfc4b4;
-    border-top: 2px solid #8b0000;
-    border-radius: 2px;
-    padding: 2px 4px;
-    text-align: center;
-  }
-  .num-val {
-    font-family: 'DM Serif Display', 'IBM Plex Serif', serif;
-    font-size: 14.5px;
-    line-height: 15px;
-    font-weight: 900;
-    color: #8b0000;
-  }
-  .num-lbl {
-    font-size: 6.8px;
-    line-height: 8.5px;
-    font-weight: 600;
-    color: #38312a;
-    margin-top: 1px;
-  }
-
-  /* 5. ILLUSTRATED CARDS GRID (15 CARDS, 5x3) */
-  .cards-grid {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    grid-template-rows: repeat(3, 136px);
-    gap: 5px;
-    margin-top: 5px;
-    flex-shrink: 0;
-  }
-  .card {
-    background: #fdfbf7;
-    border: 1px solid #d2c7b7;
-    border-radius: 3px;
-    padding: 4px 5px;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    overflow: hidden;
-  }
-  .card-top {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 7.2px;
-    font-weight: 700;
-    text-transform: uppercase;
-    color: #524a42;
-    margin-bottom: 2px;
-    border-bottom: 1px dashed #ded4c5;
-    padding-bottom: 2px;
-  }
-  .card-num {
-    background: #1a1714;
-    color: #fff;
-    width: 13px;
-    height: 13px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 7px;
-    margin-right: 3px;
-  }
-  .loc-topic {
-    display: flex;
-    align-items: center;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  /* BADGES */
-  .badge {
-    font-size: 6.5px;
-    font-weight: 800;
-    padding: 1px 3px;
-    border-radius: 2px;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-  }
-  .badge-confirmed { background: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
-  .badge-official  { background: #e0e7ff; color: #3730a3; border: 1px solid #818cf8; }
-  .badge-reported  { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
-  .badge-ongoing   { background: #ffedd5; color: #9a3412; border: 1px solid #fb923c; }
-  .badge-claim     { background: #f3e8ff; color: #6b21a8; border: 1px solid #c084fc; }
-
-  .card-art {
-    width: 100%;
-    height: 38px;
-    background: #f1ebd8;
-    border: 1px solid #e2d9c8;
-    border-radius: 2px;
-    margin-bottom: 2px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .card-headline {
-    font-family: 'DM Serif Display', 'IBM Plex Serif', serif;
-    font-size: 9.2px;
-    line-height: 10.8px;
-    font-weight: 700;
-    color: #161311;
-    margin-bottom: 2px;
-  }
-  .card-body {
-    font-size: 7.2px;
-    line-height: 9.2px;
-    color: #38312a;
-    flex-grow: 1;
-  }
-  .card-src {
-    font-size: 6.2px;
-    color: #786f66;
-    text-align: right;
-    margin-top: 1px;
-    font-style: italic;
-  }
-
-  /* 6. ALSO ON MONDAY + MAP ROW */
-  .also-map-row {
-    display: flex;
-    gap: 6px;
-    margin-top: 5px;
-    height: 162px;
-    flex-shrink: 0;
-  }
-  .also-panel {
-    width: 650px;
-    background: #fdfbf7;
-    border: 1px solid #d2c7b7;
-    border-radius: 3px;
-    padding: 4px 6px;
-    display: flex;
-    flex-direction: column;
-  }
-  .panel-header {
-    font-family: 'IBM Plex Sans', 'Inter', sans-serif;
-    font-size: 10.5px;
-    line-height: 13px;
-    font-weight: 700;
-    letter-spacing: 0.1px;
-    text-transform: uppercase;
-    color: #1a1714;
-    font-variant-numeric: lining-nums tabular-nums;
-    border-bottom: 1px solid #221d18;
-    padding-bottom: 2px;
-    margin-bottom: 3px;
-    display: flex;
-    justify-content: space-between;
-  }
-  .also-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: repeat(5, 1fr);
-    gap: 3px 6px;
-    flex-grow: 1;
-  }
-  .also-item {
-    font-size: 7.1px;
-    line-height: 9px;
-    color: #2b2520;
-    display: flex;
-    align-items: flex-start;
-  }
-  .also-num {
-    background: #2b2520;
-    color: #fff;
-    font-size: 6.5px;
-    font-weight: 700;
-    min-width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    margin-right: 3px;
-    flex-shrink: 0;
-    margin-top: 0.5px;
-  }
-  .also-text {
-    flex-grow: 1;
-  }
-  .also-text strong {
-    color: #161311;
-  }
-  .also-tag {
-    font-size: 6px;
-    font-weight: 700;
-    color: #6b21a8;
-  }
-
-  .map-panel {
-    width: 340px;
-    background: #fdfbf7;
-    border: 1px solid #d2c7b7;
-    border-radius: 3px;
-    padding: 4px 6px;
-    display: flex;
-    flex-direction: column;
-  }
-  .map-container {
-    width: 100%;
-    height: 134px;
-    background: #ede6d8;
-    border: 1px solid #ded5c5;
-    border-radius: 2px;
-    position: relative;
-    overflow: hidden;
-  }
-
-  /* 7. FOOTER SECTION: DATE CHECK + HOW SURE */
-  .footer-row {
-    display: flex;
-    gap: 6px;
-    margin-top: 5px;
-    height: 108px;
-    flex-shrink: 0;
-  }
-  .year {
-    font-family: 'IBM Plex Sans', 'Inter', sans-serif;
-    font-size: 10.5px;
-    font-weight: 700;
-    letter-spacing: 0.1px;
-    font-variant-numeric: lining-nums tabular-nums;
-  }
-  .date-check-box {
-    width: 650px;
-    background: #fdfcf9;
-    border: 1px solid #b91c1c;
-    border-radius: 3px;
-    padding: 4px 6px;
-    font-size: 7.8px;
-    line-height: 10px;
-    color: #2b2520;
-    font-variant-numeric: lining-nums tabular-nums;
-  }
-  .date-check-title {
-    font-family: 'IBM Plex Sans', 'Inter', sans-serif;
-    font-size: 10.5px;
-    line-height: 13px;
-    font-weight: 700;
-    color: #b91c1c;
-    letter-spacing: 0.1px;
-    text-transform: uppercase;
-    font-variant-numeric: lining-nums tabular-nums;
-    margin-bottom: 2px;
-  }
-  .date-check-box strong {
-    color: #161311;
-  }
-
-  .how-sure-box {
-    width: 340px;
-    background: #fdfcf9;
-    border: 1px solid #cfc4b4;
-    border-radius: 3px;
-    padding: 4px 6px;
-    font-size: 6.8px;
-    line-height: 8.8px;
-    color: #38312a;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-  }
-  .how-sure-title {
-    font-weight: 800;
-    color: #1a1714;
-    letter-spacing: 0.6px;
-    text-transform: uppercase;
-    border-bottom: 1px solid #d8cfc4;
-    padding-bottom: 1px;
-    margin-bottom: 2px;
-  }
-  .colophon {
-    font-size: 6.4px;
-    color: #786f66;
-    border-top: 1px solid #d8cfc4;
-    padding-top: 1px;
-    margin-top: 1px;
-    text-align: right;
-  }
-</style>
+    <meta charset="utf-8">
+    <title>Verified Global Broadsheet - Monday 23 November 2026</title>
+    <style>
+{build_stylesheet()}
+    </style>
 </head>
 <body>
-<div class="broadsheet">
-
-  <!-- 1. HEADER SECTION -->
-  <div class="header-masthead">
-    <div class="top-meta">
-      <div>THE WORLD IN ONE DAY · VERIFIED GLOBAL BROADSHEET</div>
-      <div class="flag">30 DATED STORIES · 9 REGIONS · STRICT UTC VERIFICATION</div>
-      <div>PRICE: OPEN RECORD · ED. <span class="year">2026</span>.11.23</div>
-    </div>
-    <div class="masthead-main">
-      <div class="masthead-date">Monday 23 November 2026</div>
-      <div class="masthead-edition">
-        FINAL GLOBAL COMPILATION<br>
-        ALL EVENTS REPORTED ON THIS ONE DAY
-      </div>
-    </div>
-    <div class="sub-leads">
-      <span>Ukraine confirms 7 drones sank corvette Merkury at Benghazi</span>
-      <span>·</span>
-      <span>Dymer rescue ends, toll 11</span>
-      <span>·</span>
-      <span>COP31 fallout: Bowen faces resignation calls</span>
-      <span>·</span>
-      <span>Huang reinstated at Nvidia (+31.5%)</span>
-    </div>
-  </div>
-
-  <!-- 2. REGION PILLS -->
-  <div class="region-row">
-    <div class="region-pill">Europe <span>7</span></div>
-    <div class="region-pill">Middle East <span>3</span></div>
-    <div class="region-pill">Africa <span>3</span></div>
-    <div class="region-pill">South Asia <span>3</span></div>
-    <div class="region-pill">East Asia <span>4</span></div>
-    <div class="region-pill">Southeast Asia <span>3</span></div>
-    <div class="region-pill">Americas <span>3</span></div>
-    <div class="region-pill">Oceania / Climate <span>2</span></div>
-    <div class="region-pill">Caucasus / Space <span>2</span></div>
-  </div>
-
-  <!-- 3. UTC TIMELINE -->
-  <div class="timeline-bar">
-    <span class="timeline-title">THE DAY IN UTC</span>
-    <div class="time-stop"><span class="time-tag">06:12</span> COP31 fallout files</div>
-    <div>·</div>
-    <div class="time-stop"><span class="time-tag">Morn</span> 450 German school hoaxes</div>
-    <div>·</div>
-    <div class="time-stop"><span class="time-tag">Midday</span> NATO AWACS to Poland</div>
-    <div>·</div>
-    <div class="time-stop"><span class="time-tag">13:59</span> Nvidia rehires Huang</div>
-    <div>·</div>
-    <div class="time-stop"><span class="time-tag">15:30</span> Centurion Day 1 (BAN 91)</div>
-    <div>·</div>
-    <div class="time-stop"><span class="time-tag">Eve</span> Spain SC shelves Puigdemont</div>
-  </div>
-
-  <!-- 4. DAY IN NUMBERS -->
-  <div class="numbers-bar">
-    <div class="num-card">
-      <div class="num-val">7</div>
-      <div class="num-lbl">Naval drones sank corvette Merkury</div>
-    </div>
-    <div class="num-card">
-      <div class="num-val">11</div>
-      <div class="num-lbl">Dymer dead as rescue concludes</div>
-    </div>
-    <div class="num-card">
-      <div class="num-val">24</div>
-      <div class="num-lbl">Dead at Cikande factory fire toll</div>
-    </div>
-    <div class="num-card">
-      <div class="num-val">450</div>
-      <div class="num-lbl">German schools emailed threats</div>
-    </div>
-    <div class="num-card">
-      <div class="num-val">+31.5%</div>
-      <div class="num-lbl">Nvidia stock surge (+$1T value)</div>
-    </div>
-    <div class="num-card">
-      <div class="num-val">$1.62B</div>
-      <div class="num-lbl">India-Nepal aid package agreed</div>
-    </div>
-    <div class="num-card">
-      <div class="num-val">91</div>
-      <div class="num-lbl">Bangladesh all out at Centurion</div>
-    </div>
-  </div>
-
-  <!-- 5. 15 ILLUSTRATED LEAD CARDS (5x3 GRID) -->
-  <div class="cards-grid">
-
-    <!-- Card 1: Benghazi -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">1</div>BENGHAZI · WAR</div>
-        <div class="badge badge-confirmed">CONFIRMED</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <path d="M0 26 Q45 23 90 26 T180 26 L180 36 L0 36 Z" fill="#7a8b99"/>
-          <!-- Corvette silhouette listing -->
-          <path d="M35 24 L50 16 L120 16 L145 22 L140 26 L30 26 Z" fill="#2b333c" transform="rotate(7 90 22)"/>
-          <rect x="75" y="10" width="16" height="8" fill="#1b222a"/>
-          <line x1="83" y1="5" x2="83" y2="10" stroke="#1b222a" stroke-width="1.5"/>
-          <!-- Drone explosion splash -->
-          <circle cx="125" cy="18" r="8" fill="#e25822" opacity="0.8"/>
-          <circle cx="125" cy="18" r="4" fill="#ffdd55"/>
-          <!-- Drone trails -->
-          <path d="M165 30 L135 21" stroke="#fff" stroke-dasharray="2 2" stroke-width="1.2"/>
-        </svg>
-      </div>
-      <div class="card-headline">Ukraine Confirms Sinking of Russian Corvette Merkury</div>
-      <div class="card-body">Zelenskyy & SBU confirm Monday: 7 naval drones launched from mothership sank corvette Merkury in Sunday strike at Benghazi base; MV Angara also hit. UNSMIL urges probe.</div>
-      <div class="card-src">Reuters · AP · The Guardian</div>
+    <!-- Top Eyebrow -->
+    <div class="top-eyebrow">
+        <span>THE WORLD IN ONE DAY · VERIFIED GLOBAL BROADSHEET</span>
+        <span class="eyebrow-center">30 DATED STORIES · 9 REGIONS · STRICT UTC VERIFICATION</span>
+        <span>PRICE: OPEN RECORD · ED. <span class="year">2026</span>.11.23</span>
     </div>
 
-    <!-- Card 2: Dymer -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">2</div>DYMER · WAR</div>
-        <div class="badge badge-official">OFFICIAL</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Ruined building -->
-          <rect x="30" y="8" width="55" height="24" fill="#4a423a"/>
-          <path d="M45 8 L60 20 L75 8 Z" fill="#ded5c5"/>
-          <!-- Search beam & emergency personnel -->
-          <polygon points="120,4 165,28 110,28" fill="#fef08a" opacity="0.35"/>
-          <rect x="135" y="18" width="18" height="12" fill="#c2410c"/>
-          <circle cx="144" cy="15" r="3" fill="#1e293b"/>
-        </svg>
-      </div>
-      <div class="card-headline">Dymer Rescue Concludes as Strike Toll Rises to 11</div>
-      <div class="card-body">Search-and-rescue ends Monday after Sunday's Russian drone strike on a 5-storey apartment building. Toll rose from 6 to 11, including a child; 2 survivors pulled from rubble.</div>
-      <div class="card-src">Ukrinform · Interfax-Ukraine</div>
-    </div>
-
-    <!-- Card 3: COP31 Fallout -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">3</div>ANTALYA / SYDNEY</div>
-        <div class="badge badge-confirmed">CONFIRMED</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Podium and broken globe -->
-          <rect x="75" y="16" width="30" height="18" fill="#334155"/>
-          <circle cx="90" cy="10" r="7" fill="#0284c7"/>
-          <path d="M85 8 Q90 12 95 10" stroke="#fff" stroke-width="1.2" fill="none"/>
-          <!-- Resignation gavel / crack -->
-          <line x1="88" y1="3" x2="92" y2="17" stroke="#b91c1c" stroke-width="1.5"/>
-          <text x="120" y="22" font-size="8" font-weight="bold" fill="#b91c1c">NO DEAL</text>
-        </svg>
-      </div>
-      <div class="card-headline">Bowen Faces Resignation Calls After COP31 Collapse</div>
-      <div class="card-body">Monday political storm in Australia after COP31 closed Sunday with no deal. Angus Taylor demands Bowen quit; Albanese defends him. Marshall Islands: "let down on all sides."</div>
-      <div class="card-src">Reuters · SMH · Guardian</div>
-    </div>
-
-    <!-- Card 4: Nvidia -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">4</div>SANTA CLARA · TECH</div>
-        <div class="badge badge-confirmed">CONFIRMED</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Semiconductor chip & soaring chart -->
-          <rect x="25" y="8" width="22" height="22" fill="#15803d" rx="2"/>
-          <rect x="30" y="13" width="12" height="12" fill="#22c55e"/>
-          <path d="M65 28 L95 20 L125 22 L155 7" fill="none" stroke="#16a34a" stroke-width="2.5"/>
-          <polygon points="155,7 148,8 152,14" fill="#16a34a"/>
-          <text x="100" y="14" font-size="8" font-weight="bold" fill="#15803d">+31.5%</text>
-        </svg>
-      </div>
-      <div class="card-headline">Huang Reinstated as Nvidia CEO; Shares Surge 31.5%</div>
-      <div class="card-body">Nvidia rehires Jensen Huang Monday following Donald Trump intervention. Shares jump 31.5%, adding ~$1T in market value. Board rules no national security risk; lawmakers raise questions.</div>
-      <div class="card-src">Reuters 13:59 UTC · CNBC</div>
-    </div>
-
-    <!-- Card 5: NATO AWACS -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">5</div>WARSAW · SECURITY</div>
-        <div class="badge badge-confirmed">CONFIRMED</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- AWACS Radar Plane -->
-          <ellipse cx="90" cy="14" rx="14" ry="4" fill="#1e293b"/>
-          <path d="M50 20 L80 18 L130 18 L140 22 L50 22 Z" fill="#475569"/>
-          <path d="M85 18 L95 28 L90 28 Z" fill="#334155"/>
-          <!-- Radar waves -->
-          <path d="M110 10 A8 8 0 0 1 120 18" stroke="#0284c7" stroke-width="1.2" fill="none"/>
-          <path d="M115 6 A14 14 0 0 1 130 18" stroke="#0284c7" stroke-width="1.2" fill="none"/>
-        </svg>
-      </div>
-      <div class="card-headline">NATO Deploys AWACS Radar Plane to Poland</div>
-      <div class="card-body">Monday decision: NATO deploys AWACS early-warning jet to Poland after three Russian Kh-101 missiles landed on Polish soil Friday. SACEUR Gen. Grynkewich authorised mission.</div>
-      <div class="card-src">Reuters, Warsaw</div>
-    </div>
-
-    <!-- Card 6: German Schools -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">6</div>GERMANY / DENMARK</div>
-        <div class="badge badge-reported">REPORTED</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- School building with alert envelope -->
-          <polygon points="40,28 40,16 55,8 70,16 70,28" fill="#64748b"/>
-          <rect x="105" y="10" width="35" height="20" fill="#fff" stroke="#334155" stroke-width="1.2"/>
-          <path d="M105 10 L122 22 L140 10" fill="none" stroke="#334155" stroke-width="1.2"/>
-          <circle cx="122" cy="18" r="5" fill="#ef4444"/>
-          <text x="120" y="21" font-size="7" font-weight="bold" fill="#fff">!</text>
-        </svg>
-      </div>
-      <div class="card-headline">450 German Schools Hit by Email Bomb Threat Hoaxes</div>
-      <div class="card-body">Coordinated wave of emailed bomb threats targeted 450 German schools and Danish campuses Monday morning. Police found no specific threat, advising against mass evacuations.</div>
-      <div class="card-src">Reuters · Euronews · DW</div>
-    </div>
-
-    <!-- Card 7: Gaza / Jabalia -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">7</div>GAZA · JABALIA</div>
-        <div class="badge badge-official">OFFICIAL</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Water well & UNRWA badge -->
-          <rect x="45" y="16" width="20" height="14" fill="#78716c"/>
-          <polygon points="42,16 55,8 68,16" fill="#a8a29e"/>
-          <rect x="100" y="8" width="40" height="22" fill="#0284c7" rx="2"/>
-          <text x="106" y="22" font-size="8" font-weight="bold" fill="#fff">UNRWA</text>
-        </svg>
-      </div>
-      <div class="card-headline">UNRWA Staff Worker Killed in Jabalia Camp Strike</div>
-      <div class="card-body">Israeli airstrike on Monday killed UNRWA worker Adel Al-Helo near a water well in northern Gaza's Jabalia refugee camp, the agency and local officials reported; three others wounded.</div>
-      <div class="card-src">Reuters · Democracy Now</div>
-    </div>
-
-    <!-- Card 8: Iran Blockade -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">8</div>TEHRAN · MIDEAST</div>
-        <div class="badge badge-official">OFFICIAL</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Naval blockade barrier & oil tanker -->
-          <rect x="30" y="16" width="45" height="12" fill="#1e293b"/>
-          <rect x="35" y="12" width="10" height="4" fill="#334155"/>
-          <line x1="95" y1="4" x2="95" y2="32" stroke="#dc2626" stroke-width="2" stroke-dasharray="3 2"/>
-          <circle cx="130" cy="18" r="8" fill="#15803d" opacity="0.3"/>
-          <text x="115" y="21" font-size="7" font-weight="bold" fill="#15803d">TEHRAN</text>
-        </svg>
-      </div>
-      <div class="card-headline">Iran Vows to Use "All Tools" Against US Naval Blockade</div>
-      <div class="card-body">Foreign ministry spokesman Baghaei announced Monday that Tehran will deploy all means against US naval blockade on oil exports. Trump told Fox News blockade runners would be sunk.</div>
-      <div class="card-src">Reuters · Anadolu</div>
-    </div>
-
-    <!-- Card 9: Cikande Fire -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">9</div>INDONESIA · DISASTER</div>
-        <div class="badge badge-ongoing">ONGOING</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Factory profile with smoke plume -->
-          <polygon points="35,28 35,16 50,22 50,16 65,22 65,28" fill="#475569"/>
-          <path d="M70 14 Q80 4 95 8 T120 4" fill="none" stroke="#71717a" stroke-width="3"/>
-          <circle cx="50" cy="24" r="5" fill="#ea580c"/>
-          <text x="125" y="22" font-size="8" font-weight="bold" fill="#991b1b">24 DEAD</text>
-        </svg>
-      </div>
-      <div class="card-headline">24 Confirmed Dead in Cikande Confectionery Factory Fire</div>
-      <div class="card-body">Indonesian officials confirmed Monday that 24 workers died in Saturday's blaze at PT Fonusa Agung Mulia plant in Banten. Search operations continue for ~30 people still missing.</div>
-      <div class="card-src">Reuters 23 Nov</div>
-    </div>
-
-    <!-- Card 10: India-Nepal -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">10</div>NEW DELHI · DIPLOMACY</div>
-        <div class="badge badge-official">OFFICIAL</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Diplomatic handshake / aid icon -->
-          <circle cx="55" cy="18" r="10" fill="#f97316"/>
-          <circle cx="80" cy="18" r="10" fill="#0284c7"/>
-          <rect x="62" y="14" width="11" height="8" fill="#15803d"/>
-          <text x="105" y="22" font-size="9" font-weight="bold" fill="#15803d">$1.62B AID</text>
-        </svg>
-      </div>
-      <div class="card-headline">India Pledges Record $1.62B Aid Package to Flood-Hit Nepal</div>
-      <div class="card-body">PM Narendra Modi and Nepali counterpart Balendra Shah agreed on a $1.62 billion economic package in Delhi Monday during Shah's first overseas bilateral visit since taking office.</div>
-      <div class="card-src">Reuters, New Delhi</div>
-    </div>
-
-    <!-- Card 11: Spain Puigdemont -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">11</div>MADRID · COURTS</div>
-        <div class="badge badge-official">OFFICIAL</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Judicial scales / gavel -->
-          <line x1="60" y1="10" x2="60" y2="28" stroke="#1e293b" stroke-width="2"/>
-          <line x1="45" y1="14" x2="75" y2="14" stroke="#1e293b" stroke-width="2"/>
-          <circle cx="45" cy="20" r="4" fill="#a16207"/>
-          <circle cx="75" cy="20" r="4" fill="#a16207"/>
-          <text x="95" y="22" font-size="8" font-weight="bold" fill="#1e293b">CASE SHELVED</text>
-        </svg>
-      </div>
-      <div class="card-headline">Spain Supreme Court Shelves Puigdemont Case</div>
-      <div class="card-body">Spain's Supreme Court on Monday closed the criminal case against Catalan separatist Carles Puigdemont, removing his last legal obstacle to return from nine years of Belgian exile.</div>
-      <div class="card-src">Reuters, Madrid</div>
-    </div>
-
-    <!-- Card 12: Bangladesh Hasina -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">12</div>DHAKA · POLITICS</div>
-        <div class="badge badge-official">OFFICIAL</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Law arrest warrant / handcuffs -->
-          <circle cx="60" cy="18" r="7" fill="none" stroke="#334155" stroke-width="2"/>
-          <circle cx="80" cy="18" r="7" fill="none" stroke="#334155" stroke-width="2"/>
-          <line x1="67" y1="18" x2="73" y2="18" stroke="#334155" stroke-width="2"/>
-          <text x="100" y="22" font-size="8" font-weight="bold" fill="#b91c1c">WARRANT</text>
-        </svg>
-      </div>
-      <div class="card-headline">Dhaka Reaffirms Immediate Arrest if Hasina Returns</div>
-      <div class="card-body">State Minister Shama Obaed Islam told Reuters Monday Bangladesh will arrest and jail ousted PM Sheikh Hasina if she returns from India, pursuing extradition under bilateral treaty.</div>
-      <div class="card-src">Reuters, Dhaka</div>
-    </div>
-
-    <!-- Card 13: South Korea NIS -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">13</div>SEOUL · SECURITY</div>
-        <div class="badge badge-official">OFFICIAL</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- National Intelligence Service shield -->
-          <path d="M60 8 L75 14 L75 24 Q75 30 60 34 Q45 30 45 24 L45 14 Z" fill="#1e3a8a"/>
-          <polygon points="60,14 63,22 57,22" fill="#facc15"/>
-          <text x="90" y="22" font-size="8" font-weight="bold" fill="#1e3a8a">1ST WOMAN CHIEF</text>
-        </svg>
-      </div>
-      <div class="card-headline">Kang Kum-sil Nominated as S. Korea's First Female Spy Chief</div>
-      <div class="card-body">President Lee Jae Myung unveiled a surprise security reshuffle Monday, naming former justice minister Kang to lead the NIS, alongside new foreign and unification ministers.</div>
-      <div class="card-src">Reuters, Seoul</div>
-    </div>
-
-    <!-- Card 14: Cricket Test -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">14</div>CENTURION · SPORT</div>
-        <div class="badge badge-official">OFFICIAL</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Cricket wickets and ball -->
-          <line x1="50" y1="12" x2="50" y2="28" stroke="#854d0e" stroke-width="1.8"/>
-          <line x1="56" y1="12" x2="56" y2="28" stroke="#854d0e" stroke-width="1.8"/>
-          <line x1="62" y1="12" x2="62" y2="28" stroke="#854d0e" stroke-width="1.8"/>
-          <line x1="48" y1="12" x2="64" y2="12" stroke="#854d0e" stroke-width="1.5"/>
-          <circle cx="80" cy="20" r="5" fill="#dc2626"/>
-          <text x="100" y="22" font-size="8" font-weight="bold" fill="#1e293b">BAN 91 ALL OUT</text>
-        </svg>
-      </div>
-      <div class="card-headline">SA Skittles Bangladesh for 91 on Centurion Day 1</div>
-      <div class="card-body">2nd Test, Day 1 at Centurion: South Africa bowlers skittle Bangladesh for 91 before reaching 88 for 1 at stumps, seizing commanding control on the opening day.</div>
-      <div class="card-src">ESPNcricinfo Match Report</div>
-    </div>
-
-    <!-- Card 15: China Secrets -->
-    <div class="card">
-      <div class="card-top">
-        <div class="loc-topic"><div class="card-num">15</div>BEIJING · SECURITY</div>
-        <div class="badge badge-official">OFFICIAL</div>
-      </div>
-      <div class="card-art">
-        <svg viewBox="0 0 180 36" width="100%" height="100%">
-          <rect width="180" height="36" fill="#ded5c5"/>
-          <!-- Classified document stamp -->
-          <rect x="45" y="8" width="22" height="24" fill="#fff" stroke="#475569" stroke-width="1.2"/>
-          <rect x="40" y="16" width="32" height="8" fill="#b91c1c" transform="rotate(-12 55 20)"/>
-          <text x="44" y="22" font-size="5" font-weight="bold" fill="#fff" transform="rotate(-12 55 20)">SECRETS</text>
-          <text x="85" y="22" font-size="8" font-weight="bold" fill="#b91c1c">DEATH SENTENCE</text>
-        </svg>
-      </div>
-      <div class="card-headline">Official "Ma" Sentenced to Death for State Secrets Leak</div>
-      <div class="card-body">China's state secrets watchdog Baomiguan disclosed Monday an administrative official surnamed Ma was sentenced to death for leaking state secrets to a foreign spy agency while abroad.</div>
-      <div class="card-src">Reuters · Baomiguan</div>
-    </div>
-
-  </div>
-
-  <!-- 6. ALSO ON MONDAY + MAP ROW -->
-  <div class="also-map-row">
-
-    <!-- Also on Monday list (Stories 16 to 30) -->
-    <div class="also-panel">
-      <div class="panel-header">
-        <div>ALSO ON MONDAY 23 NOVEMBER <span class="year">2026</span> · VERIFIED WORLD BRIEFS</div>
-        <div>15 ADDITIONAL DATED DISPATCHES</div>
-      </div>
-      <div class="also-grid">
-
-        <div class="also-item">
-          <div class="also-num">16</div>
-          <div class="also-text"><strong>Trump Fox Interview:</strong> Inclined to resume Iran military strikes post-New Year if talks fail; warns blockade runners sink. <span class="also-tag">[REPORTED]</span></div>
+    <!-- Masthead -->
+    <div class="masthead">
+        <h1 class="masthead-title">Monday 23 November 2026</h1>
+        <div class="masthead-meta">
+            <div>FINAL GLOBAL COMPILATION</div>
+            <div>ALL EVENTS REPORTED ON THIS ONE DAY</div>
         </div>
+    </div>
+    <div class="masthead-rule"></div>
 
-        <div class="also-item">
-          <div class="also-num">17</div>
-          <div class="also-text"><strong>Baltic Sea / Kremlin:</strong> Moscow accuses Ukraine of "terrorist activity" after Saturday drone strike on cargo ship Sparta II. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">18</div>
-          <div class="also-text"><strong>Zakarpattia:</strong> Hungarian PM Peter Magyar announces visit to western Ukraine to support ethnic Hungarian minority. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">19</div>
-          <div class="also-text"><strong>Belgium:</strong> PM Bart De Wever sets Dec 31 budget deadline, warning deadlock brings government coalition to an end. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">20</div>
-          <div class="also-text"><strong>Indonesia:</strong> President Prabowo nominates two cabinet ministers as VP candidates following Gibran's official resignation. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">21</div>
-          <div class="also-text"><strong>Thailand:</strong> Appeals Court halves 6-year lèse-majesté prison sentence for opposition lawmaker over social media post. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">22</div>
-          <div class="also-text"><strong>China Demographics:</strong> NDRC issues 2030 blueprint upgrading elderly & childcare infrastructure to combat aging trends. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">23</div>
-          <div class="also-text"><strong>China–Switzerland:</strong> FM Wang Yi urges Swiss counterpart to oppose Taiwan independence and aid China-EU trade. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">24</div>
-          <div class="also-text"><strong>Samsung Cyber:</strong> Confirms 8,000+ customer accounts breached via customer-response portal detected Saturday. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">25</div>
-          <div class="also-text"><strong>Colombia:</strong> MinTIC files formal regulatory charges against Starlink Colombia for failing to block prison signals. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">26</div>
-          <div class="also-text"><strong>Delta Air Lines:</strong> Resolves weight-and-balance software glitch that triggered nationwide holiday flight delays. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">27</div>
-          <div class="also-text"><strong>Zambia:</strong> Opposition leader Brian Mundubile & 12 associates committed to High Court for treason trial. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">28</div>
-          <div class="also-text"><strong>Benghazi Denial:</strong> Egypt formally denies reports it withdrew military experts amid eastern Libyan rift. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">29</div>
-          <div class="also-text"><strong>Armenia:</strong> Yerevan unveils draft constitution toward Azerbaijan peace treaty; move welcomed by Baku. <span class="also-tag">[OFFICIAL]</span></div>
-        </div>
-
-        <div class="also-item">
-          <div class="also-num">30</div>
-          <div class="also-text"><strong>Space Intel:</strong> German media report NATO intelligence warned Russia plans 'Sputnik-S' orbital nuclear weapon. <span class="also-tag">[CLAIM]</span></div>
-        </div>
-
-      </div>
+    <!-- Subhead ticker -->
+    <div class="ticker-bar">
+        Ukraine confirms 7 drones sank corvette Merkury at Benghazi &nbsp;·&nbsp;
+        Dymer rescue ends, toll 11 &nbsp;·&nbsp;
+        COP31 fallout: Bowen faces resignation calls &nbsp;·&nbsp;
+        Huang reinstated at Nvidia (+31.5%) &nbsp;·&nbsp;
+        NATO AWACS to Poland &nbsp;·&nbsp;
+        India pledges $1.62B Nepal aid
     </div>
 
-    <!-- Where it Happened World Map -->
-    <div class="map-panel">
-      <div class="panel-header">
-        <div>WHERE IT HAPPENED · GEOGRAPHIC LOCATOR</div>
-        <div>PINS 1–30</div>
-      </div>
-      <div class="map-container">
-        <svg viewBox="0 0 326 142" width="100%" height="100%">
-          <!-- Ocean background & gridlines -->
-          <rect width="326" height="142" fill="#ede5d5"/>
-          <line x1="0" y1="71" x2="326" y2="71" stroke="#d5cabb" stroke-width="0.8" stroke-dasharray="3 3"/>
-          <line x1="163" y1="0" x2="163" y2="142" stroke="#d5cabb" stroke-width="0.8" stroke-dasharray="3 3"/>
-
-          <!-- Simplified Continent Outlines (Equirectangular) -->
-          <!-- North America -->
-          <path d="M25 20 L75 16 L88 32 L78 50 L65 52 L55 68 L48 66 L42 50 L20 38 Z" fill="#d9cfbe" stroke="#b8ab96" stroke-width="0.8"/>
-          <!-- South America -->
-          <path d="M58 75 L82 78 L95 98 L85 130 L72 135 L62 95 Z" fill="#d9cfbe" stroke="#b8ab96" stroke-width="0.8"/>
-          <!-- Europe -->
-          <path d="M142 22 L172 20 L180 34 L162 46 L145 42 L138 32 Z" fill="#d9cfbe" stroke="#b8ab96" stroke-width="0.8"/>
-          <!-- Africa -->
-          <path d="M140 50 L175 48 L188 75 L175 116 L155 118 L142 85 L132 62 Z" fill="#d9cfbe" stroke="#b8ab96" stroke-width="0.8"/>
-          <!-- Asia -->
-          <path d="M182 20 L275 20 L285 45 L260 70 L228 72 L215 58 L182 46 Z" fill="#d9cfbe" stroke="#b8ab96" stroke-width="0.8"/>
-          <!-- Australia -->
-          <path d="M250 96 L285 95 L290 120 L255 125 Z" fill="#d9cfbe" stroke="#b8ab96" stroke-width="0.8"/>
-
-          <!-- Numbered Pin Dots -->
-          <!-- 1: Benghazi -->
-          <circle cx="158" cy="48" r="4.2" fill="#b91c1c"/>
-          <text x="158" y="50" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">1</text>
-
-          <!-- 2: Dymer/Kyiv -->
-          <circle cx="166" cy="32" r="4.2" fill="#b91c1c"/>
-          <text x="166" y="34" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">2</text>
-
-          <!-- 3: Sydney / Pacific -->
-          <circle cx="282" cy="115" r="4.2" fill="#b91c1c"/>
-          <text x="282" y="117" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">3</text>
-
-          <!-- 4: Santa Clara (US) -->
-          <circle cx="38" cy="42" r="4.2" fill="#b91c1c"/>
-          <text x="38" y="44" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">4</text>
-
-          <!-- 5: Warsaw -->
-          <circle cx="158" cy="28" r="4.2" fill="#b91c1c"/>
-          <text x="158" y="30" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">5</text>
-
-          <!-- 6: Germany / Denmark -->
-          <circle cx="150" cy="26" r="4.2" fill="#b91c1c"/>
-          <text x="150" y="28" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">6</text>
-
-          <!-- 7: Gaza -->
-          <circle cx="170" cy="50" r="4.2" fill="#b91c1c"/>
-          <text x="170" y="52" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">7</text>
-
-          <!-- 8: Tehran -->
-          <circle cx="182" cy="46" r="4.2" fill="#b91c1c"/>
-          <text x="182" y="48" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">8</text>
-
-          <!-- 9: Cikande/Jakarta -->
-          <circle cx="240" cy="85" r="4.2" fill="#b91c1c"/>
-          <text x="240" y="87" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">9</text>
-
-          <!-- 10: New Delhi -->
-          <circle cx="212" cy="52" r="4.2" fill="#b91c1c"/>
-          <text x="212" y="54" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">10</text>
-
-          <!-- 11: Madrid -->
-          <circle cx="136" cy="40" r="4.2" fill="#b91c1c"/>
-          <text x="136" y="42" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">11</text>
-
-          <!-- 12: Dhaka -->
-          <circle cx="224" cy="54" r="4.2" fill="#b91c1c"/>
-          <text x="224" y="56" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">12</text>
-
-          <!-- 13: Seoul -->
-          <circle cx="258" cy="40" r="4.2" fill="#b91c1c"/>
-          <text x="258" y="42" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">13</text>
-
-          <!-- 14: Centurion -->
-          <circle cx="166" cy="108" r="4.2" fill="#b91c1c"/>
-          <text x="166" y="110" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">14</text>
-
-          <!-- 15: Beijing -->
-          <circle cx="248" cy="36" r="4.2" fill="#b91c1c"/>
-          <text x="248" y="38" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">15</text>
-
-          <!-- Secondary pins (16 to 30) -->
-          <!-- 16: Washington DC -->
-          <circle cx="56" cy="34" r="4.2" fill="#1e3a8a"/>
-          <text x="56" y="36" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">16</text>
-
-          <!-- 17: Baltic / Kremlin -->
-          <circle cx="174" cy="24" r="4.2" fill="#1e3a8a"/>
-          <text x="174" y="26" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">17</text>
-
-          <!-- 18: Zakarpattia -->
-          <circle cx="160" cy="37" r="4.2" fill="#1e3a8a"/>
-          <text x="160" y="39" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">18</text>
-
-          <!-- 19: Belgium -->
-          <circle cx="144" cy="30" r="4.2" fill="#1e3a8a"/>
-          <text x="144" y="32" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">19</text>
-
-          <!-- 20: Indonesia -->
-          <circle cx="249" cy="89" r="4.2" fill="#1e3a8a"/>
-          <text x="249" y="91" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">20</text>
-
-          <!-- 21: Thailand -->
-          <circle cx="234" cy="66" r="4.2" fill="#1e3a8a"/>
-          <text x="234" y="68" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">21</text>
-
-          <!-- 22: China demographics -->
-          <circle cx="240" cy="42" r="4.2" fill="#1e3a8a"/>
-          <text x="240" y="44" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">22</text>
-
-          <!-- 23: China–Switzerland -->
-          <circle cx="146" cy="38" r="4.2" fill="#1e3a8a"/>
-          <text x="146" y="40" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">23</text>
-
-          <!-- 24: Samsung / Suwon -->
-          <circle cx="266" cy="44" r="4.2" fill="#1e3a8a"/>
-          <text x="266" y="46" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">24</text>
-
-          <!-- 25: Colombia -->
-          <circle cx="70" cy="80" r="4.2" fill="#1e3a8a"/>
-          <text x="70" y="82" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">25</text>
-
-          <!-- 26: Delta / Atlanta -->
-          <circle cx="50" cy="46" r="4.2" fill="#1e3a8a"/>
-          <text x="50" y="48" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">26</text>
-
-          <!-- 27: Zambia -->
-          <circle cx="164" cy="94" r="4.2" fill="#1e3a8a"/>
-          <text x="164" y="96" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">27</text>
-
-          <!-- 28: Egypt / Cairo -->
-          <circle cx="166" cy="54" r="4.2" fill="#1e3a8a"/>
-          <text x="166" y="56" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">28</text>
-
-          <!-- 29: Armenia -->
-          <circle cx="178" cy="36" r="4.2" fill="#1e3a8a"/>
-          <text x="178" y="38" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">29</text>
-
-          <!-- 30: Space intel -->
-          <circle cx="150" cy="16" r="4.2" fill="#1e3a8a"/>
-          <text x="150" y="18" font-size="5" font-weight="bold" fill="#fff" text-anchor="middle">30</text>
-        </svg>
-      </div>
+    <!-- Region Pills -->
+    <div class="pills-container">
+        {pills_str}
     </div>
 
-  </div>
+    <!-- UTC Timeline -->
+    {timeline_full}
 
-  <!-- 7. FOOTER SECTION: DATE CHECK + HOW SURE -->
-  <div class="footer-row">
-
-    <!-- Date Check Box -->
-    <div class="date-check-box">
-      <div class="date-check-title">DATE CHECK · STRICT MONDAY 23 NOVEMBER <span class="year">2026</span> AUDIT (UTC)</div>
-      <div><strong>INCLUDED:</strong> Every story on this broadsheet happened or was first reported on Monday 23 November <span class="year">2026</span> (UTC).</div>
-      <div style="margin-top:2px;"><strong>LEFT OUT (Occurred on earlier days):</strong> COP31 closing plenary & no-deal gavel (Sunday 22 Nov) · Dymer initial 186-drone attack & 6-dead toll (Sunday; Monday was 11-dead toll & search conclusion) · Pre-dawn Benghazi explosions (Sunday; Ukrainian official confirmation Monday) · US Democrats reaching 258 House seats (Sunday call) · Sunday sports: Verstappen Las Vegas GP, Alcaraz ATP Finals, Márquez 8th MotoGP title, HK committee poll 98.79%, India 720/9, Liverpool 4-0 Man Utd · Saturday Cikande confectionery fire start (Monday 24 confirmed dead toll) & Baltic Sparta II fire · Friday Polish border Kh-101 missiles (Monday AWACS deployment).</div>
+    <!-- Day in Numbers -->
+    <div class="numbers-strip">
+        {numbers_str}
     </div>
 
-    <!-- How Sure Box -->
-    <div class="how-sure-box">
-      <div>
-        <div class="how-sure-title">HOW SURE · CERTAINTY CALIBRATION</div>
-        <div><strong>CONFIRMED:</strong> 2+ independent global news wire outlets.</div>
-        <div><strong>OFFICIAL:</strong> Government, court, military, or agency on record.</div>
-        <div><strong>REPORTED:</strong> Single reputable global wire or broadcaster.</div>
-        <div><strong>CLAIM:</strong> One side's allegation; explicitly attributed.</div>
-        <div><strong>ONGOING:</strong> Search, rescue, or disaster operations in progress.</div>
-        <div style="font-style:italic;margin-top:1px;">Illustrations are drawn editorial vector artwork, not photographs.</div>
-      </div>
-      <div class="colophon">
+    <!-- 15 Illustrated Lead Cards -->
+    <div class="lead-grid">
+        {lead_cards_str}
+    </div>
+
+    <!-- Middle-Bottom Section: Briefs & Map -->
+    <div class="middle-section">
+        <div class="briefs-container">
+            <div class="section-header">
+                <span>ALSO ON MONDAY 23 NOVEMBER <span class="year">2026</span> · VERIFIED WORLD BRIEFS</span>
+                <span>15 ADDITIONAL DATED DISPATCHES</span>
+            </div>
+            <div class="briefs-grid">
+                {briefs_str}
+            </div>
+        </div>
+        <div class="map-container">
+            <div class="section-header">
+                <span>WHERE IT HAPPENED · GEOGRAPHIC LOCATOR</span>
+                <span>PINS 1–30</span>
+            </div>
+            <div class="map-box">
+                {world_map_svg}
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer Section: DATE CHECK & HOW SURE -->
+    <div class="footer-section">
+        <div class="date-check-box">
+            <div class="date-check-title">DATE CHECK · STRICT MONDAY 23 NOVEMBER <span class="year">2026</span> AUDIT (UTC)</div>
+            <p class="date-check-included"><strong>INCLUDED:</strong> Every story on this broadsheet happened or was first reported on Monday 23 November <span class="year">2026</span> (UTC).</p>
+            <p class="date-check-leftout"><strong>LEFT OUT (earlier days):</strong> COP31 closing plenary &amp; no-deal gavel (Sunday 22 Nov); Dymer initial 186-drone attack &amp; 6-dead toll (Sunday; Monday was 11-dead toll &amp; search conclusion); pre-dawn Benghazi explosions (Sunday; Ukrainian official confirmation Monday); US Democrats reaching 258 House seats (Sunday call); Sunday sports: Verstappen Las Vegas GP, Alcaraz ATP Finals, Márquez 8th MotoGP title, HK committee poll 98.79%, India 720/9, Liverpool 4-0 Man Utd; Saturday Cikande confectionery fire start (Monday 24 confirmed dead) &amp; Baltic Sparta II fire; Friday Polish border Kh-101 missiles (Monday AWACS deployment).</p>
+        </div>
+        <div class="how-sure-box">
+            <div class="how-sure-title">HOW SURE · CERTAINTY CALIBRATION</div>
+            <div class="how-sure-row"><strong>CONFIRMED:</strong> 2+ independent global news wire outlets.</div>
+            <div class="how-sure-row"><strong>OFFICIAL:</strong> Government, court, military, or agency on record.</div>
+            <div class="how-sure-row"><strong>REPORTED:</strong> Single reputable global wire or broadcaster.</div>
+            <div class="how-sure-row"><strong>CLAIM:</strong> One side's allegation; explicitly attributed.</div>
+            <div class="how-sure-row"><strong>ONGOING:</strong> Search, rescue, or disaster operations in progress.</div>
+            <div class="how-sure-note">Illustrations are drawn editorial vector artwork, not photographs.</div>
+        </div>
+    </div>
+
+    <!-- Bottom Colophon -->
+    <div class="colophon">
         Deterministic compilation for make.fun news-image-20261123 · Mon 23 Nov <span class="year">2026</span>
-      </div>
     </div>
-
-  </div>
-
-</div>
 </body>
 </html>
 """
+    return html_content
 
-def generate_image():
-    print("[*] Writing HTML template to /tmp/news_entry_render.html...")
-    with open(TMP_HTML, "w", encoding="utf-8") as f:
-        f.write(HTML_CONTENT)
+# -----------------------------------------------------------------------------
+# Headless Chrome Rendering & Deterministic Output
+# -----------------------------------------------------------------------------
 
-    if os.path.exists(TMP_PNG):
-        os.remove(TMP_PNG)
+def render_image(html_str: str, output_path: str):
+    """Render HTML to 1024x1024 RGB PNG using Headless Chrome and Pillow."""
+    with tempfile.NamedTemporaryFile(suffix=".html", mode="w", delete=False, encoding="utf-8") as f:
+        f.write(html_str)
+        temp_html = f.name
 
-    print("[*] Executing headless Chrome render using deterministic recipe...")
-    chrome_cmd = (
-        f"timeout 60s /opt/google/chrome/chrome --headless=new --disable-gpu --no-sandbox "
-        f"--disable-background-networking --disable-default-apps --disable-extensions --disable-sync "
-        f"--metrics-recording-only --no-first-run --disable-component-update "
-        f'--host-rules="MAP * ~NOTFOUND" '
-        f"--window-size=1024,1024 --screenshot={TMP_PNG} "
-        f"file://{TMP_HTML}"
-    )
+    temp_png = temp_html.replace(".html", ".png")
 
-    rc = os.system(chrome_cmd)
-    if not os.path.exists(TMP_PNG) or rc != 0:
-        print(f"[*] First attempt returned {rc}, retrying once...")
-        rc = os.system(chrome_cmd)
+    chrome_cmd = [
+        "timeout", "60s",
+        "/opt/google/chrome/chrome",
+        "--headless=new",
+        "--disable-gpu",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--hide-scrollbars",
+        "--force-device-scale-factor=1",
+        "--run-all-compositor-stages-before-draw",
+        "--no-first-run",
+        "--no-default-browser-check",
+        '--host-rules="MAP * ~NOTFOUND"',
+        "--window-size=1024,1024",
+        f"--screenshot={temp_png}",
+        f"file://{temp_html}",
+    ]
 
-    if not os.path.exists(TMP_PNG):
-        print(f"[!] Chrome command failed with return code {rc}")
-        sys.exit(1)
+    try:
+        subprocess.run(
+            " ".join(chrome_cmd),
+            shell=True,
+            check=True,
+            timeout=60,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-    print("[*] Processing image with Pillow for exact 1024x1024 PNG...")
-    img = Image.open(TMP_PNG)
-    if img.size != (1024, 1024):
-        print(f"[!] Resizing from {img.size} to (1024, 1024)...")
-        img = img.resize((1024, 1024), Image.Resampling.LANCZOS)
-    img = img.convert("RGB")
+        im = Image.open(temp_png).convert("RGB")
+        if im.size != (1024, 1024):
+            im = im.resize((1024, 1024), Image.Resampling.LANCZOS)
 
-    os.makedirs(PROJECT_DIR, exist_ok=True)
-    img.save(OUTPUT_PNG, format="PNG", optimize=True)
+        # Save deterministically
+        im.save(output_path, format="PNG", optimize=True)
 
-    # Clean up scratch files outside repo
-    if os.path.exists(TMP_HTML):
-        os.remove(TMP_HTML)
-    if os.path.exists(TMP_PNG):
-        os.remove(TMP_PNG)
+    finally:
+        if os.path.exists(temp_html):
+            os.remove(temp_html)
+        if os.path.exists(temp_png):
+            os.remove(temp_png)
 
-    file_size = os.path.getsize(OUTPUT_PNG)
-    with open(OUTPUT_PNG, "rb") as f:
-        sha256 = hashlib.sha256(f.read()).hexdigest()
+    # Verify output size and SHA-256
+    with open(output_path, "rb") as f:
+        bytes_data = f.read()
 
-    print(f"[✓] Successfully generated {OUTPUT_PNG}")
-    print(f"    Dimensions: {img.size[0]}x{img.size[1]} px")
-    print(f"    File size:  {file_size:,} bytes ({file_size / 1024:.1f} KiB)")
-    print(f"    SHA-256:    {sha256}")
+    size = len(bytes_data)
+    sha256 = hashlib.sha256(bytes_data).hexdigest()
+    print(f"Generated {output_path}: {size} bytes, SHA-256: {sha256}")
 
-    if file_size > 1048576:
-        raise ValueError(f"Image exceeds 1 MiB limit! Size: {file_size} bytes")
+    if size == 0 or size > 1048576:
+        raise ValueError(f"Generated image exceeds 1MB limit: {size} bytes")
+
+def main():
+    workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    output_path = os.path.join(workspace_root, "entry.png")
+    html_content = build_html()
+    render_image(html_content, output_path)
 
 if __name__ == "__main__":
-    generate_image()
+    main()
